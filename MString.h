@@ -76,6 +76,13 @@ struct IString
     constexpr MSTRING_U64 Length() const {return length;}
     constexpr const char* Ptr() const {return ptr;}
 
+    // Array access.
+    constexpr const char& operator[](MSTRING_U64 i) const {return Ptr()[i];}
+
+    // "Legacy iterator" stuff.
+    constexpr const char* begin() const {return Ptr();}
+    constexpr const char* end() const {return Ptr() + Length();}
+
     // Comparison operators. Comparison with MString is implemented inside of MString.
     inline friend bool operator==(IString lhs, IString rhs);
     inline friend bool operator==(IString lhs, const char* rhs);
@@ -122,6 +129,12 @@ struct MString
 
     constexpr const char& operator[](MSTRING_U64 i) const {return Ptr()[i];}
     constexpr char& operator[](MSTRING_U64 i) {return Ptr()[i];}
+
+    // "Legacy iterator" stuff.
+    constexpr char* begin() {return Ptr();}
+    constexpr char* end() {return Ptr() + Length();}
+    constexpr const char* begin() const {return Ptr();}
+    constexpr const char* end() const {return Ptr() + Length();}
 
     // Comparison operators.
     // @Speed(Frog): These could be faster if they didn't call memcmp(), we don't care about lexicographic ordering.
@@ -304,6 +317,7 @@ void MString::ShrinkToFit()
         long_data = {};
         MSTRING_MEMCPY(short_data, ptr, length + 1);
         short_data[23] = 23 - length;
+        MSTRING_FREE(ptr);
     }
     else
     {
@@ -325,13 +339,20 @@ MString& MString::Insert(MSTRING_U64 index, const char* str, MSTRING_U64 length)
     return *this;
 }
 
+
 MString& MString::Remove(MSTRING_U64 index, MSTRING_U64 count)
 {
-    MSTRING_ASSERT(index + count <= Length());
+    MSTRING_U64 shift_index = index + count; // Start index of the bytes we need to shift forwards.
+    MSTRING_U64 old_length = Length();
+    MSTRING_ASSERT(shift_index <= old_length);
     if (count == 0) return *this;
 
-    MSTRING_U64 old_length = Length();
-    if (index + count < old_length) MSTRING_MEMMOVE(Ptr() + index, Ptr() + index + count, count);
+    // These two cases are covered by the assert, but we avoid a bad memmove even when asserts are disabled.
+    // If index is too big, we do nothing. If count is too big, we remove up to the end of the string.
+    if (index >= old_length) return *this;
+    if (shift_index > old_length) count = old_length - index;
+
+    if (shift_index < old_length) MSTRING_MEMMOVE(Ptr() + index, Ptr() + shift_index, old_length - shift_index);
     SetLength(old_length - count);
 
     return *this;
