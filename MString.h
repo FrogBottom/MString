@@ -65,14 +65,14 @@ typedef uint64_t MSTRING_U64;
 // @Todo(Frog): What are the consequences of allowing default construction? Maybe we should default it.
 struct IString
 {
-    IString() = delete;
-    const IString(const char* ptr);
+    IString() = default;
+    IString(const char* ptr);
     constexpr IString(const char* ptr, MSTRING_U64 length) : ptr(ptr), length(length) {}
     constexpr operator const char*() const {return ptr;}
 
     // @Revisit(Frog): I hate having these as accessors, but I left them his way so that
     // the API is identical for IString and MString. I'm not sure though, I might just
-    // remove these and leave the fields public, especially since they are already const!
+    // remove these and leave the fields public!
     constexpr MSTRING_U64 Length() const {return length;}
     constexpr const char* Ptr() const {return ptr;}
 
@@ -94,7 +94,7 @@ struct IString
 
     private:
     const char* ptr;
-    const MSTRING_U64 length;
+    MSTRING_U64 length;
 };
 
 // A mutable string. Doesn't allocate memory until the length exceeds 23 bytes.
@@ -154,7 +154,7 @@ struct MString
     // will just inline a call to Insert(), and many are only here to remove type ambiguity.
     MString& Insert(MSTRING_U64 index, const char* str, MSTRING_U64 str_length);
     MString& Remove(MSTRING_U64 index, MSTRING_U64 count);
-    
+
     inline MString& Insert(MSTRING_U64 index, const MString& str) {return Insert(index, str.Ptr(), str.Length());}
     inline MString& Insert(MSTRING_U64 index, const char* str); // Defined in implementation since it has to call strlen().
     inline MString& Insert(MSTRING_U64 index, IString str)        {return Insert(index, str.Ptr(), str.Length());}
@@ -188,7 +188,7 @@ struct MString
     inline friend MString operator+(IString lhs, MString rhs)        {rhs.Insert(0, lhs); return rhs;}
     inline friend MString operator+(char lhs, MString rhs)           {rhs.Insert(0, lhs); return rhs;}
 
-    // Copy and move constructor/assignment nonsense.    
+    // Copy and move constructor/assignment nonsense.
     MString(const MString& other);
     MString(MString&& other);
     MString& operator=(const MString& other);
@@ -225,6 +225,40 @@ struct MString
 // ========================================================================== //
 
 #ifdef MSTRING_IMPLEMENTATION
+
+// If not set in advance, try to determine endianness based on predefined (compiler-dependent) macros.
+// If we can't figure out the endianness, we will try to default to little-endian.
+// For MSVC, we just check if _WIN32 is defined (which currently always indicates little-endian).
+// For GCC, we check the value of __BYTE_ORDER.
+// These will need changed if you use a different compiler or are far enough in the future that
+// these checks aren't sufficient.
+#ifndef MSTRING_LITTLE_ENDIAAN
+#if defined(__BYTE_ORDER) && __BYTE_ORDER == __BIG_ENDIAN
+#define MSTRING_IS_LITTLE_ENDIAN 0
+#elif defined(__BYTE_ORDER) && __BYTE_ORDER == __LITTLE_ENDIAN || (defined(_MSC_VER) && defined(_WIN32))
+#define MSTRING_IS_LITTLE_ENDIAN 1
+#else
+#pragma message("MString: Unable to determine platform endianness, assuming little-endian as a fallback.")
+#define MSTRING_IS_LITTLE_ENDIAN 1
+#endif
+#endif
+
+// Adjust bitmasks based on the detected (or guessed) endianness. You could change the code to do this at runtime,
+// if you would prefer that.
+#if (MSTRING_LITTLE_ENDIAN==1)
+#define MSTRING_SMALL_MASK  0xFF00000000000000
+#define MSTRING_ZERO_MASK   0x00FFFFFFFFFFFFFF
+#define MSTRING_SMALL_SHIFT ((MSTRING_U64)56)
+#define MSTRING_HEAP_BIT    ((MSTRING_U64)63)
+#else
+#define MSTRING_SMALL_MASK  0x00000000000000FF
+#define MSTRING_ZERO_MASK   0xFFFFFFFFFFFFFF00
+#define MSTRING_SMALL_SHIFT ((MSTRING_U64)0)
+#define MSTRING_HEAP_BIT    ((MSTRING_U64)0)
+#endif
+
+// @Todo(Frog): Move a bunch of other macro stuff down into implementation (for example including std library stuff).
+// @Todo(Frog): Finish the masking implementation, test to make sure that still works.
 
 // Misc one-liners that have to be in the implementation section because they call
 // strlen() or memcmp(), which the caller of this library might re-define.
@@ -278,7 +312,7 @@ void MString::SetLength(MSTRING_U64 length)
     }
     else
     {
-        short_data[23] = 23 - length;
+        short_data[23] = (char)(23 - length);
         short_data[length] = '\0';
     }
 }
@@ -290,8 +324,8 @@ void MString::ExpandIfNeeded(MSTRING_U64 required_capacity)
 
     // We'll double in size, or if that isn't enough we will just allocate exactly the required number of bytes.
     MSTRING_U64 new_capacity = (old_capacity * 2 > required_capacity) ? old_capacity * 2 : required_capacity;
-    
-    // If we are already on the heap, just reallocate. 
+
+    // If we are already on the heap, just reallocate.
     if (long_data.is_heap) long_data.ptr = (char*)MSTRING_REALLOC(long_data.ptr, new_capacity + 1);
     else // Otherwise if we need to move to the heap for the first time, allocate and copy.
     {
@@ -302,7 +336,7 @@ void MString::ExpandIfNeeded(MSTRING_U64 required_capacity)
         long_data.ptr = new_ptr;
         long_data.length = old_length;
     }
-    
+
     long_data.capacity = new_capacity;
 }
 
@@ -316,7 +350,7 @@ void MString::ShrinkToFit()
         char* ptr = long_data.ptr;
         long_data = {};
         MSTRING_MEMCPY(short_data, ptr, length + 1);
-        short_data[23] = 23 - length;
+        short_data[23] = (char)(23 - length);
         MSTRING_FREE(ptr);
     }
     else
@@ -329,7 +363,7 @@ void MString::ShrinkToFit()
 MString& MString::Insert(MSTRING_U64 index, const char* str, MSTRING_U64 length)
 {
     MSTRING_ASSERT(str && index <= Length());
-    
+
     MSTRING_U64 old_length = Length();
     SetLength(old_length + length);
 
