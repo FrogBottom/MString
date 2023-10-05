@@ -2,6 +2,9 @@
 
 set "lib="
 
+set vc=C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build
+if not defined lib (if exist "%vc%" (call "%vc%\vcvarsall.bat" x64 >nul))
+
 set vc=C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build
 if not defined lib (if exist "%vc%" (call "%vc%\vcvarsall.bat" x64 >nul))
 

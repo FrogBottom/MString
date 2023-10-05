@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <assert.h>
 
+// Just runs a few basic sanity checks for MString and IString. Doesn't test every edge-case,
+// doesn't validate that move/copy semantics are correct, and doesn't do any checking for
+// correct use of malloc/free.
 int main()
 {
     printf("MString properties: Size of length type: %lld\n"
