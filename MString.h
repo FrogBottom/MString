@@ -103,6 +103,8 @@ struct IString
 // null-terminated string.
 struct MString
 {
+    constexpr static MSTRING_U64 StackSize = 32;
+    constexpr static MSTRING_U64 MaxStackLength = StackSize - (MSTRING_U64)sizeof(MSTRING_U64) - 1;
     // Constructors. Default constructor produces a valid empty string.
     MString() = default;
     MString(const char* ptr, MSTRING_U64 length);
@@ -112,16 +114,16 @@ struct MString
     explicit MString(IString str) : MString(str.Ptr(), str.Length()) {}
 
     // Getters and setters for length and capacity and whatnot.
-    constexpr MSTRING_U64 Length() const {return (long_data.is_heap) ? long_data.length : 23 - short_data[23];}
-    constexpr MSTRING_U64 Capacity() const {return (long_data.is_heap) ? long_data.capacity : 23;}
-    constexpr bool IsHeap() const {return long_data.is_heap;}
+    constexpr bool IsHeap() const {return data.heap.is_heap;}
+    constexpr MSTRING_U64 Length() const {return length;}
+    constexpr MSTRING_U64 Capacity() const {return (IsHeap()) ? data.heap.capacity : MaxStackLength;}
     void SetLength(MSTRING_U64 new_length);
-    void ExpandIfNeeded(MSTRING_U64 requred_capacity);
+    void ExpandIfNeeded(MSTRING_U64 required_capacity);
     void ShrinkToFit();
 
     // Accessors for the raw pointer, auto-cast, and array subscript operators.
-    constexpr const char* Ptr() const {return (long_data.is_heap) ? long_data.ptr : short_data;}
-    constexpr char* Ptr() {return (long_data.is_heap) ? long_data.ptr : short_data;}
+    constexpr const char* Ptr() const {return (IsHeap()) ? data.heap.ptr : data.stack;}
+    constexpr char* Ptr() {return (IsHeap()) ? data.heap.ptr : data.stack;}
 
     constexpr operator IString() const {return IString(Ptr(), Length());}
     constexpr operator const char*() const {return Ptr();}
@@ -160,13 +162,13 @@ struct MString
     inline MString& Insert(MSTRING_U64 index, IString str)        {return Insert(index, str.Ptr(), str.Length());}
     inline MString& Insert(MSTRING_U64 index, char c)             {return Insert(index, &c, 1);}
 
-    inline MString& Prepend(const char* str, MSTRING_U64 length) {return Insert(0, str, length);}
+    inline MString& Prepend(const char* str, MSTRING_U64 len) {return Insert(0, str, len);}
     inline MString& Prepend(const MString& str)                  {return Insert(0, str.Ptr(), str.Length());}
     inline MString& Prepend(const char* str); // Defined in implementation since it has to call strlen().
     inline MString& Prepend(IString str)                         {return Insert(0, str.Ptr(), str.Length());}
     inline MString& Prepend(char c)                              {return Insert(0, &c, 1);}
 
-    inline MString& Append(const char* str, MSTRING_U64 length) {return Insert(Length(), str, length);}
+    inline MString& Append(const char* str, MSTRING_U64 len) {return Insert(Length(), str, len);}
     inline MString& Append(const MString& str)                  {return Insert(Length(), str.Ptr(), str.Length());}
     inline MString& Append(const char* str); // Defined in implementation since it has to call strlen().
     inline MString& Append(IString str)                         {return Insert(Length(), str.Ptr(), str.Length());}
@@ -201,20 +203,16 @@ struct MString
     private:
     union
     {
-        struct LongData
+        char stack[MaxStackLength + 1];
+        struct
         {
             char* ptr;
-            MSTRING_U64 capacity; // Total allocated space, NOT including null terminator.
-            MSTRING_U64 length : 63; // String length, NOT including null terminator.
-            MSTRING_U64 is_heap : 1; // Flag indicates that this string is heap-allocated.
-        } long_data;
-
-        // The space used by long_data is repurposed to hold the string if it is short enough.
-        // The is_heap flag is the high bit of the last byte (at least on little-endian platforms), which
-        // will always be zero when the string is "short". The last byte encodes (23 - length) so that
-        // when length is 23, it doubles as the null terminator.
-        char short_data[24];
-    };
+            MSTRING_U64 capacity;
+            char unused[MaxStackLength - sizeof(MSTRING_U64) - sizeof(char*)];
+            char is_heap;
+        } heap;
+    } data;
+    MSTRING_U64 length;
 };
 
 #define MSTRING_H
@@ -279,97 +277,78 @@ MString& MString::Insert(MSTRING_U64 index, const char* str) {return Insert(inde
 MString& MString::Prepend(const char* str) {return Insert(0, str, MSTRING_STRLEN(str));}
 MString& MString::Append(const char* str) {return Insert(Length(), str, MSTRING_STRLEN(str));}
 
-MString::MString(const char* ptr, MSTRING_U64 length) : MString()
+MString::MString(const char* ptr, MSTRING_U64 len) : MString()
 {
-    MSTRING_ASSERT(ptr);
-    if (length < 24)
+    MSTRING_ASSERT(ptr && len >= 0);
+
+    if (len > 0)
     {
-        MSTRING_MEMCPY(short_data, ptr, length);
-        short_data[length] = '\0';
-        short_data[23] = (char)(23 - length);
-    }
-    else
-    {
-        long_data.is_heap = true;
-        long_data.ptr = (char*)MSTRING_MALLOC(length + 1);
-        MSTRING_MEMCPY(long_data.ptr, ptr, length);
-        long_data.ptr[length] = '\0';
-        long_data.length = length;
-        long_data.capacity = length;
+        if (len <= MaxStackLength) MSTRING_MEMCPY(data.stack, ptr, len);
+        else
+        {
+            data.heap.is_heap = true;
+            data.heap.ptr = (char*)MSTRING_MALLOC(len + 1);
+            MSTRING_MEMCPY(data.heap.ptr, ptr, len);
+            data.heap.capacity = len;
+        }
     }
 
+    Ptr()[len] = '\0';
+    length = len;
 }
 
-void MString::SetLength(MSTRING_U64 length)
+void MString::SetLength(MSTRING_U64 len)
 {
-    if (length == Length()) return;
-    ExpandIfNeeded(length);
+    MSTRING_ASSERT(len >= 0);
+    if (len == length) return;
 
-    if (long_data.is_heap)
-    {
-        long_data.length = length;
-        long_data.ptr[length] = '\0';
-    }
-    else
-    {
-        short_data[23] = (char)(23 - length);
-        short_data[length] = '\0';
-    }
+    ExpandIfNeeded(len);
+    Ptr()[len] = '\0';
+    length = len;
 }
 
 void MString::ExpandIfNeeded(MSTRING_U64 required_capacity)
 {
-    MSTRING_U64 old_capacity = Capacity();
-    if (required_capacity < 24 || old_capacity >= required_capacity) return;
-
+    if (Capacity() >= required_capacity) return;
     // We'll double in size, or if that isn't enough we will just allocate exactly the required number of bytes.
-    MSTRING_U64 new_capacity = (old_capacity * 2 > required_capacity) ? old_capacity * 2 : required_capacity;
-
+    MSTRING_U64 capacity = (Capacity() * 2 > required_capacity) ? Capacity() * 2 : required_capacity;
     // If we are already on the heap, just reallocate.
-    if (long_data.is_heap) long_data.ptr = (char*)MSTRING_REALLOC(long_data.ptr, new_capacity + 1);
+    if (IsHeap()) data.heap.ptr = (char*)MSTRING_REALLOC(data.heap.ptr, capacity + 1);
     else // Otherwise if we need to move to the heap for the first time, allocate and copy.
     {
-        char* new_ptr = (char*)MSTRING_MALLOC(new_capacity + 1);
-        MSTRING_U64 old_length = Length();
-        if (old_length) MSTRING_MEMCPY(new_ptr, short_data, old_length + 1);
-        long_data.is_heap = true;
-        long_data.ptr = new_ptr;
-        long_data.length = old_length;
+        char* new_ptr = (char*)MSTRING_MALLOC(capacity + 1);
+        if (length) MSTRING_MEMCPY(new_ptr, data.stack, length + 1);
+        data.heap = {new_ptr, capacity, {}, true};
     }
-
-    long_data.capacity = new_capacity;
 }
 
 void MString::ShrinkToFit()
 {
-    if (!long_data.is_heap) return; // If we aren't on the heap, there is nothing to shrink!
+    if (!IsHeap()) return; // If we aren't on the heap, there is nothing to shrink!
 
-    MSTRING_U64 length = Length();
-    if (length < 24) // Move back onto the stack if we are small enough.
+    if (length <= MaxStackLength) // Move back onto the stack if we are small enough.
     {
-        char* ptr = long_data.ptr;
-        long_data = {};
-        MSTRING_MEMCPY(short_data, ptr, length + 1);
-        short_data[23] = (char)(23 - length);
+        char* ptr = data.heap.ptr;
+        data = {};
+        MSTRING_MEMCPY(data.stack, ptr, length + 1);
         MSTRING_FREE(ptr);
     }
     else
     {
-        long_data.ptr = (char*)MSTRING_REALLOC(long_data.ptr, length + 1);
-        long_data.capacity = length;
+        data.heap.ptr = (char*)MSTRING_REALLOC(data.heap.ptr, length + 1);
+        data.heap.capacity = length;
     }
 }
 
-MString& MString::Insert(MSTRING_U64 index, const char* str, MSTRING_U64 length)
+MString& MString::Insert(MSTRING_U64 index, const char* str, MSTRING_U64 len)
 {
-    MSTRING_ASSERT(str && index <= Length());
+    MSTRING_ASSERT(str && index <= length && len >= 0);
+    if (len <= 0 || index < 0 || !str) return *this;
 
-    MSTRING_U64 old_length = Length();
-    SetLength(old_length + length);
-
-    if (index < old_length) MSTRING_MEMMOVE(Ptr() + index + length, Ptr() + index, old_length - index);
-    if (length > 0) MSTRING_MEMCPY(Ptr() + index, str, length);
-
+    MSTRING_U64 old_length = length;
+    SetLength(old_length + len);
+    if (index < old_length) MSTRING_MEMMOVE(Ptr() + index + len, Ptr() + index, old_length - index);
+    else if (index == old_length) MSTRING_MEMCPY(Ptr() + index, str, len);
     return *this;
 }
 
@@ -377,39 +356,33 @@ MString& MString::Insert(MSTRING_U64 index, const char* str, MSTRING_U64 length)
 MString& MString::Remove(MSTRING_U64 index, MSTRING_U64 count)
 {
     MSTRING_U64 shift_index = index + count; // Start index of the bytes we need to shift forwards.
-    MSTRING_U64 old_length = Length();
-    MSTRING_ASSERT(shift_index <= old_length);
-    if (count == 0) return *this;
+    MSTRING_ASSERT(index >= 0 && count >= 0 && shift_index <= length);
+    if (count <= 0 || index < 0 || index >= length) return *this;
 
-    // These two cases are covered by the assert, but we avoid a bad memmove even when asserts are disabled.
-    // If index is too big, we do nothing. If count is too big, we remove up to the end of the string.
-    if (index >= old_length) return *this;
-    if (shift_index > old_length) count = old_length - index;
-
-    if (shift_index < old_length) MSTRING_MEMMOVE(Ptr() + index, Ptr() + shift_index, old_length - shift_index);
-    SetLength(old_length - count);
-
+    if (shift_index < length) MSTRING_MEMMOVE(Ptr() + index, Ptr() + shift_index, length - shift_index);
+    else if (shift_index > length) count = length - index;
+    SetLength(length - count);
     return *this;
 }
 
 MString::MString(const MString& other)
 {
-    if (other.long_data.is_heap)
+    if (other.IsHeap())
     {
-        long_data.is_heap = true;
-        long_data.ptr = (char*)MSTRING_MALLOC(other.long_data.capacity + 1);
-        MSTRING_MEMCPY(long_data.ptr, other.long_data.ptr, other.long_data.length + 1);
-        long_data.length = other.long_data.length;
-        long_data.capacity = other.long_data.capacity;
+        data.heap.is_heap = true;
+        data.heap.ptr = (char*)MSTRING_MALLOC(other.data.heap.capacity + 1);
+        MSTRING_MEMCPY(data.heap.ptr, other.data.heap.ptr, other.length + 1);
+        data.heap.capacity = other.data.heap.capacity;
 
     }
-    else long_data = other.long_data;
+    else data = other.data;
+    length = other.length;
 }
 
 MString::MString(MString&& other)
 {
-    long_data = other.long_data;
-    other.long_data = {};
+    data = other.data;
+    other.data = {};
 }
 
 MString& MString::operator=(const MString& other)
@@ -417,8 +390,7 @@ MString& MString::operator=(const MString& other)
     if (this != &other)
     {
         Free();
-        MSTRING_U64 length = other.Length();
-        SetLength(length);
+        SetLength(other.length);
         MSTRING_MEMCPY(Ptr(), other.Ptr(), length);
     }
     return *this;
@@ -429,16 +401,16 @@ MString& MString::operator=(MString&& other)
     if (this != &other)
     {
         Free();
-        long_data = other.long_data;
-        other.long_data = {};
+        data = other.data;
+        other.data = {};
     }
     return *this;
 }
 
 void MString::Free()
 {
-    if (long_data.is_heap) MSTRING_FREE(long_data.ptr);
-    long_data = {};
+    if (IsHeap()) MSTRING_FREE(data.heap.ptr);
+    data = {};
 }
 
 #endif
