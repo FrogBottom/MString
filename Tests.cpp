@@ -7,6 +7,11 @@
 
 int main()
 {
+    printf("MString properties: Size of length type: %lld\n"
+    "Size of structure: %lld\n"
+    "Maximum short string length: %lld\n",
+    sizeof(MString::MaxShortLength), sizeof(MString), (size_t)MString::MaxShortLength);
+
     printf("Testing Default Initialization:\n");
     {
         IString istring = {};
@@ -31,14 +36,16 @@ int main()
     {
 	    MString long_test = MString("A significantly longer string, for no other reason than because I need to test whether this gets heap allocated or not.");
         assert(long_test.IsHeap());
-        MString edge_test = MString("abcdefghijklmnopqrstuvw");
+        MString edge_test = MString("");
+        edge_test.SetLength(MString::MaxShortLength);
+        for (MSTRING_SIZE_T i = 0; i < MString::MaxShortLength; ++i) edge_test[i] = 'a' + (char)i;
         assert(!edge_test.IsHeap());
-        assert(edge_test.Length() == 23);
-        assert(edge_test.Capacity() == 23);
+        assert(edge_test.Length() == MString::MaxShortLength);
+        assert(edge_test.Capacity() == MString::MaxShortLength);
         edge_test += 'x';
         assert(edge_test.IsHeap());
-        assert(edge_test.Length() == 24);
-        assert(edge_test.Capacity() >= 24);
+        assert(edge_test.Length() == MString::MaxShortLength + 1);
+        assert(edge_test.Capacity() >= MString::MaxShortLength + 1);
         edge_test.SetLength(30);
         assert(edge_test.Length() == 30);
         assert(edge_test[30] == '\0');
